@@ -33,7 +33,7 @@ int main(void){
     {
         // Update
         if(IsKeyPressed(KEY_A)) {
-            dg.generateRooms(60, 15, 25, 10, rng);
+            dg.generateRooms(60, 15, 25, 50, rng);
         } 
 
         if(IsKeyPressed(KEY_S)) {
@@ -41,18 +41,11 @@ int main(void){
         } 
         
         if(IsKeyPressed(KEY_D)) {
-            dg.selectRandomRooms(15, rng);
+            dg.selectRandomRooms(20, rng);
         } 
 
         if(IsKeyPressed(KEY_F)) {
-            size_t tris = dg.triangulateRooms();
-            TraceLog(LOG_INFO, "rooms: %zu, triangles: %zu, stored indices: %zu",
-                    dg.m_rooms.size(), tris, dg.m_triangles.size());
-
-            for (size_t t = 0; t < tris; t++) {
-                TraceLog(LOG_INFO, "tri %zu: %d %d %d", t,
-                        dg.m_triangles[3*t], dg.m_triangles[3*t+1], dg.m_triangles[3*t+2]);
-            }
+            dg.buildEdges();
         }
 
         // Draw
@@ -60,7 +53,7 @@ int main(void){
             ClearBackground(GRAY);
 
             dg.drawRooms({400,400}, 2);
-            dg.drawTriangles({400,400}, 2, YELLOW);
+            dg.drawEdges({400,400}, 2, YELLOW);
         EndDrawing();
     }
 

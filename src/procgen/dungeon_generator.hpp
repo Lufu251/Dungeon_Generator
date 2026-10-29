@@ -3,6 +3,7 @@
 #include <vector>
 #include <cmath>
 #include <numbers>
+#include <algorithm>
 
 #include <delabella.h>
 #include <raylib.h>
@@ -10,27 +11,37 @@
 #include <helpers/rng.hpp>
 
 struct DungeonGenerator {
+    struct Edge {
+        int a;
+        int b;
+
+        auto operator<=>(const Edge&) const = default;  // gives ==, <, etc. for sort/unique
+    };
+
     std::vector<Rectangle> m_rooms;
-    std::vector<int> m_triangles;
+    std::vector<Edge> m_edges;
 
     DungeonGenerator(){}
 
-
     // -------------------- Helpers --------------------
     // Random point inside a circle centered on the origin
-    // Random point inside a circle centered on the origin (uniform by area)
-Vector2 getRandomPointInCircle(float radius, Rng& rng) {
-    float t = 2.0f * std::numbers::pi_v<float> * rng.nextFloat();
-    float r = std::sqrt(rng.nextFloat());
-    return { radius * r * std::cos(t), radius * r * std::sin(t) };
-}
+    Vector2 getRandomPointInCircle(float radius, Rng& rng) {
+        float t = 2.0f * std::numbers::pi_v<float> * rng.nextFloat();
+        float r = std::sqrt(rng.nextFloat());
+        return { radius * r * std::cos(t), radius * r * std::sin(t) };
+    }
+
+    Vector2 roomCenter(size_t i) const {
+        const Rectangle& r = m_rooms[i];
+        return { r.x + r.width * 0.5f, r.y + r.height * 0.5f };
+    }
 
     // -------------------- Generation --------------------
 
     // Generate random amount of rooms inside of a circle 
     void generateRooms(int room_count, int min_room_size, int max_room_size, float radius, Rng& rng){
         m_rooms.clear();
-        m_triangles.clear();
+        m_edges.clear();
         m_rooms.reserve(room_count);
 
         for (int i = 0; i < room_count; i++){
@@ -82,6 +93,8 @@ Vector2 getRandomPointInCircle(float radius, Rng& rng) {
     }
 
     bool separateRooms(size_t max_iterations){
+        m_edges.clear();
+
         for (size_t i = 0; i < max_iterations; i++) {
             if(!separationPass()){
                 return true;
@@ -94,7 +107,7 @@ Vector2 getRandomPointInCircle(float radius, Rng& rng) {
     void selectRandomRooms(size_t room_count, Rng& rng) {
         if (room_count >= m_rooms.size()) return; // nothing to cut
 
-        m_triangles.clear();
+        m_edges.clear();
 
         for (size_t i = 0; i < room_count; i++) {
             size_t r = rng.nextInt(i, m_rooms.size() - 1);
@@ -104,38 +117,52 @@ Vector2 getRandomPointInCircle(float radius, Rng& rng) {
         m_rooms.resize(room_count);
     }
 
-    // Triangulates the room centers. Returns the number of triangles, 0 on failure.
-    size_t triangulateRooms() {
-        m_triangles.clear();
+    // Triangulates the room centers. Fills `triangles` with 3 room indices per triangle.
+    void triangulateRooms(std::vector<int>& triangles) {
+        triangles.clear();
 
         const size_t n = m_rooms.size();
-        if (n < 3) return 0;
+        if (n < 3) return;
 
-        // Room centers interleaved: x0, y0, x1, y1, ... (index i == room i)
-        std::vector<float> pts(n * 2);
-        for (size_t i = 0; i < n; i++) {
-            pts[2*i]     = m_rooms[i].x + m_rooms[i].width  * 0.5f;
-            pts[2*i + 1] = m_rooms[i].y + m_rooms[i].height * 0.5f;
-        }
+        // Vector2 is {float x, y}, so this array is already interleaved: x0, y0, x1, y1, ...
+        std::vector<Vector2> pts(n);
+        for (size_t i = 0; i < n; i++) pts[i] = roomCenter(i);
 
         IDelaBella2<float>* idb = IDelaBella2<float>::Create();
-        const int result = idb->Triangulate((int)n, pts.data(), pts.data() + 1, 2 * sizeof(float));
 
-        size_t tri_count = 0;
-        if (result > 0) {
-            tri_count = (size_t)(idb->GetNumOutputIndices() / 3);
-            m_triangles.reserve(tri_count * 3);
+        if (idb->Triangulate((int)n, &pts[0].x, &pts[0].y, sizeof(Vector2)) > 0) {
+            const int tri_count = idb->GetNumOutputIndices() / 3;
+            triangles.reserve(tri_count * 3);
 
             const IDelaBella2<float>::Simplex* s = idb->GetFirstDelaunaySimplex();
-            for (size_t t = 0; t < tri_count && s != nullptr; t++, s = s->next) {
-                m_triangles.push_back(s->v[0]->i);   // index of the original point == room index
-                m_triangles.push_back(s->v[1]->i);
-                m_triangles.push_back(s->v[2]->i);
-            }
+
+            for (int t = 0; t < tri_count; t++, s = s->next)
+                for (int k = 0; k < 3; k++)
+                    triangles.push_back(s->v[k]->i);
         }
 
         idb->Destroy();
-        return tri_count;
+    }
+
+    // Triangulates the rooms and builds the unique edge list.
+    size_t buildEdges() {
+        std::vector<int> triangles;
+        triangulateRooms(triangles);
+
+        m_edges.clear();
+        m_edges.reserve(triangles.size());   // 3 edges per triangle = same count as indices
+
+        for (size_t t = 0; t + 2 < triangles.size(); t += 3) {
+            for (size_t k = 0; k < 3; k++) {
+                const int u = triangles[t + k];
+                const int v = triangles[t + (k + 1) % 3];
+                m_edges.push_back({std::min(u, v), std::max(u, v)});
+            }
+        }
+
+        std::sort(m_edges.begin(), m_edges.end());
+        m_edges.erase(std::unique(m_edges.begin(), m_edges.end()), m_edges.end());
+        return m_edges.size();
     }
 
     // Debug
@@ -151,20 +178,12 @@ Vector2 getRandomPointInCircle(float radius, Rng& rng) {
         }
     }
 
-    // Debug: draws every triangle edge between room centers
-    void drawTriangles(Vector2 offset, int tile_size, Color color){
-        for (size_t t = 0; t + 2 < m_triangles.size(); t += 3){
-            Vector2 p[3];
-            for (int k = 0; k < 3; k++){
-                const Rectangle& room = m_rooms[m_triangles[t + k]];
-                p[k] = {
-                    (room.x + room.width  * 0.5f) * tile_size + offset.x,
-                    (room.y + room.height * 0.5f) * tile_size + offset.y
-                };
-            }
-            DrawLineV(p[0], p[1], color);
-            DrawLineV(p[1], p[2], color);
-            DrawLineV(p[2], p[0], color);
+    // Debug: draws every unique edge between room centers
+    void drawEdges(Vector2 offset, int tile_size, Color color){
+        for (const Edge& e : m_edges){
+            Vector2 pa = Vector2Add(Vector2Scale(roomCenter(e.a), (float)tile_size), offset);
+            Vector2 pb = Vector2Add(Vector2Scale(roomCenter(e.b), (float)tile_size), offset);
+            DrawLineV(pa, pb, color);
         }
     }
 };
